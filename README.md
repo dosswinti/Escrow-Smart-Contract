@@ -11,6 +11,7 @@ A secure escrow system built on the Stacks blockchain using Clarity smart contra
 - **⏰ Automatic Expiration**: Funds automatically refund to buyer after expiration
 - **🔄 Cancellation Support**: Both parties can cancel pending escrows
 - **📊 Transaction History**: Track all escrow transactions and states
+- **💼 Dynamic Fee Collection**: Platform automatically collects configurable fees from completed transactions
 
 ## 🏗️ Contract Architecture
 
@@ -38,11 +39,18 @@ A secure escrow system built on the Stacks blockchain using Clarity smart contra
 #### ⚖️ For Arbitrators
 - `resolve-dispute` - Resolve disputes in favor of buyer or seller
 
+#### 💼 For Platform Owner
+- `update-platform-fee` - Adjust fee rate (max 10%)
+- `withdraw-collected-fees` - Withdraw accumulated platform fees
+
 #### 🔍 Read-Only Functions
 - `get-escrow-details` - Get complete escrow information
 - `get-escrow-state` - Get current escrow state
 - `get-escrows-by-buyer` - List buyer's escrows
 - `get-escrows-by-seller` - List seller's escrows
+- `get-platform-fee-rate` - Check current fee percentage
+- `get-collected-fees` - View total accumulated fees
+- `preview-fee` - Calculate fees before creating escrow
 
 ## 🛠️ Setup and Usage
 
@@ -107,6 +115,18 @@ clarinet test
 (contract-call? .escrow-smart-contract resolve-dispute u1 true) ;; true = release to seller
 ```
 
+#### Managing Platform Fees (Owner)
+```clarity
+;; Update fee rate to 3% (300 basis points)
+(contract-call? .escrow-smart-contract update-platform-fee u300)
+
+;; Withdraw collected fees
+(contract-call? .escrow-smart-contract withdraw-collected-fees)
+
+;; Preview fees before creating escrow
+(contract-call? .escrow-smart-contract preview-fee u1000000) ;; Check fees for 1 STX
+```
+
 ## 🧪 Testing
 
 Run the test suite to verify contract functionality:
@@ -142,6 +162,7 @@ The tests cover:
 - `u105` - Escrow not yet expired
 - `u106` - Funds already released
 - `u107` - Funds already refunded
+- `u108` - Invalid fee rate (exceeds 10%)
 
 ## 🤝 Contributing
 

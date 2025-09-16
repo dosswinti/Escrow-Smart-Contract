@@ -7,8 +7,11 @@
 (define-constant ERR_NOT_EXPIRED (err u105))
 (define-constant ERR_ALREADY_RELEASED (err u106))
 (define-constant ERR_ALREADY_REFUNDED (err u107))
+(define-constant ERR_INVALID_FEE (err u108))
 
 (define-data-var next-escrow-id uint u1)
+(define-data-var platform-fee-rate uint u250)
+(define-data-var collected-fees uint u0)
 
 (define-map escrows
   { escrow-id: uint }
@@ -58,6 +61,18 @@
     escrow-data (get state escrow-data)
     "not-found"
   )
+)
+
+(define-private (calculate-fee (amount uint))
+  (/ (* amount (var-get platform-fee-rate)) u10000)
+)
+
+(define-read-only (get-platform-fee-rate)
+  (var-get platform-fee-rate)
+)
+
+(define-read-only (get-collected-fees)
+  (var-get collected-fees)
 )
 
 (define-public (create-escrow 
@@ -126,6 +141,9 @@
     (
       (escrow-data (unwrap! (get-escrow-details escrow-id) ERR_ESCROW_NOT_FOUND))
       (escrow-fund-data (unwrap! (get-escrow-funds escrow-id) ERR_ESCROW_NOT_FOUND))
+      (total-amount (get amount escrow-fund-data))
+      (platform-fee (calculate-fee total-amount))
+      (seller-amount (- total-amount platform-fee))
     )
     (asserts! (is-eq tx-sender (get buyer escrow-data)) ERR_NOT_AUTHORIZED)
     (asserts! (or 
@@ -135,10 +153,18 @@
     (asserts! (not (is-escrow-expired escrow-id)) ERR_EXPIRED)
     
     (try! (as-contract (stx-transfer? 
-      (get amount escrow-fund-data)
+      seller-amount
       tx-sender 
       (get seller escrow-data)
     )))
+    
+    (try! (as-contract (stx-transfer? 
+      platform-fee
+      tx-sender 
+      CONTRACT_OWNER
+    )))
+    
+    (var-set collected-fees (+ (var-get collected-fees) platform-fee))
     
     (map-set escrows
       { escrow-id: escrow-id }
@@ -301,5 +327,44 @@
       acc
     )
     acc
+  )
+)
+
+(define-public (update-platform-fee (new-fee-rate uint))
+  (begin
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_NOT_AUTHORIZED)
+    (asserts! (<= new-fee-rate u1000) ERR_INVALID_FEE)
+    (var-set platform-fee-rate new-fee-rate)
+    (ok true)
+  )
+)
+
+(define-public (withdraw-collected-fees)
+  (let 
+    (
+      (fee-amount (var-get collected-fees))
+    )
+    (asserts! (is-eq tx-sender CONTRACT_OWNER) ERR_NOT_AUTHORIZED)
+    (asserts! (> fee-amount u0) ERR_INSUFFICIENT_FUNDS)
+    
+    (try! (as-contract (stx-transfer? fee-amount tx-sender CONTRACT_OWNER)))
+    (var-set collected-fees u0)
+    
+    (ok fee-amount)
+  )
+)
+
+(define-read-only (preview-fee (amount uint))
+  (let 
+    (
+      (fee (calculate-fee amount))
+      (net-amount (- amount fee))
+    )
+    {
+      total-amount: amount,
+      platform-fee: fee,
+      seller-receives: net-amount,
+      fee-rate: (var-get platform-fee-rate)
+    }
   )
 )
