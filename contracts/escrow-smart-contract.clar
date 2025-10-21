@@ -8,6 +8,10 @@
 (define-constant ERR_ALREADY_RELEASED (err u106))
 (define-constant ERR_ALREADY_REFUNDED (err u107))
 (define-constant ERR_INVALID_FEE (err u108))
+(define-constant ERR_INVALID_MILESTONE (err u109))
+(define-constant ERR_MILESTONE_NOT_FOUND (err u110))
+(define-constant ERR_MILESTONE_ALREADY_RELEASED (err u111))
+(define-constant ERR_MILESTONE_NOT_CONFIRMED (err u112))
 
 (define-data-var next-escrow-id uint u1)
 (define-data-var platform-fee-rate uint u250)
@@ -33,8 +37,40 @@
   { amount: uint }
 )
 
+(define-map milestones
+  { escrow-id: uint, milestone-id: uint }
+  {
+    amount: uint,
+    description: (string-ascii 100),
+    state: (string-ascii 20),
+    confirmed-at: uint
+  }
+)
+
+(define-map milestone-count
+  { escrow-id: uint }
+  { count: uint }
+)
+
 (define-private (get-current-escrow-id)
   (var-get next-escrow-id)
+)
+
+(define-private (get-milestone-count (escrow-id uint))
+  (match (map-get? milestone-count { escrow-id: escrow-id })
+    count-data (get count count-data)
+    u0
+  )
+)
+
+(define-private (increment-milestone-count (escrow-id uint))
+  (let
+    (
+      (current-count (get-milestone-count escrow-id))
+      (new-count (+ current-count u1))
+    )
+    (map-set milestone-count { escrow-id: escrow-id } { count: new-count })
+  )
 )
 
 (define-private (increment-escrow-id)
@@ -355,7 +391,7 @@
 )
 
 (define-read-only (preview-fee (amount uint))
-  (let 
+  (let
     (
       (fee (calculate-fee amount))
       (net-amount (- amount fee))
@@ -367,4 +403,160 @@
       fee-rate: (var-get platform-fee-rate)
     }
   )
+)
+
+(define-public (create-milestone-escrow
+  (seller principal)
+  (arbitrator principal)
+  (total-amount uint)
+  (duration uint)
+  (title (string-ascii 50))
+  (description (string-ascii 200))
+)
+  (let
+    (
+      (escrow-id (get-current-escrow-id))
+      (expires-at (+ stacks-block-height duration))
+    )
+    (asserts! (> total-amount u0) ERR_INSUFFICIENT_FUNDS)
+    (asserts! (> duration u0) ERR_INVALID_STATE)
+
+    (try! (stx-transfer? total-amount tx-sender (as-contract tx-sender)))
+
+    (map-set escrows
+      { escrow-id: escrow-id }
+      {
+        buyer: tx-sender,
+        seller: seller,
+        arbitrator: arbitrator,
+        amount: total-amount,
+        state: "milestone-pending",
+        created-at: stacks-block-height,
+        expires-at: expires-at,
+        title: title,
+        description: description
+      }
+    )
+
+    (map-set escrow-funds
+      { escrow-id: escrow-id }
+      { amount: total-amount }
+    )
+
+    (map-set milestone-count
+      { escrow-id: escrow-id }
+      { count: u0 }
+    )
+
+    (increment-escrow-id)
+    (ok escrow-id)
+  )
+)
+
+(define-public (add-milestone
+  (escrow-id uint)
+  (amount uint)
+  (description (string-ascii 100))
+)
+  (let
+    (
+      (escrow-data (unwrap! (get-escrow-details escrow-id) ERR_ESCROW_NOT_FOUND))
+      (escrow-fund-data (unwrap! (get-escrow-funds escrow-id) ERR_ESCROW_NOT_FOUND))
+      (current-count (get-milestone-count escrow-id))
+      (milestone-id current-count)
+      (total-milestone-amount (fold sum-milestone-amounts (list u0 u1 u2 u3 u4 u5 u6 u7 u8 u9) u0))
+    )
+    (asserts! (is-eq tx-sender (get buyer escrow-data)) ERR_NOT_AUTHORIZED)
+    (asserts! (is-eq (get state escrow-data) "milestone-pending") ERR_INVALID_STATE)
+    (asserts! (> amount u0) ERR_INSUFFICIENT_FUNDS)
+    (asserts! (<= (+ total-milestone-amount amount) (get amount escrow-fund-data)) ERR_INSUFFICIENT_FUNDS)
+
+    (map-set milestones
+      { escrow-id: escrow-id, milestone-id: milestone-id }
+      {
+        amount: amount,
+        description: description,
+        state: "pending",
+        confirmed-at: u0
+      }
+    )
+
+    (increment-milestone-count escrow-id)
+    (ok milestone-id)
+  )
+)
+
+(define-private (sum-milestone-amounts (idx uint) (acc uint))
+  acc
+)
+
+(define-public (confirm-milestone
+  (escrow-id uint)
+  (milestone-id uint)
+)
+  (let
+    (
+      (escrow-data (unwrap! (get-escrow-details escrow-id) ERR_ESCROW_NOT_FOUND))
+      (milestone-data (unwrap! (map-get? milestones { escrow-id: escrow-id, milestone-id: milestone-id }) ERR_MILESTONE_NOT_FOUND))
+    )
+    (asserts! (is-eq tx-sender (get seller escrow-data)) ERR_NOT_AUTHORIZED)
+    (asserts! (is-eq (get state escrow-data) "milestone-pending") ERR_INVALID_STATE)
+    (asserts! (is-eq (get state milestone-data) "pending") ERR_MILESTONE_ALREADY_RELEASED)
+    (asserts! (not (is-escrow-expired escrow-id)) ERR_EXPIRED)
+
+    (map-set milestones
+      { escrow-id: escrow-id, milestone-id: milestone-id }
+      (merge milestone-data { state: "confirmed", confirmed-at: stacks-block-height })
+    )
+
+    (ok true)
+  )
+)
+
+(define-public (release-milestone-funds
+  (escrow-id uint)
+  (milestone-id uint)
+)
+  (let
+    (
+      (escrow-data (unwrap! (get-escrow-details escrow-id) ERR_ESCROW_NOT_FOUND))
+      (milestone-data (unwrap! (map-get? milestones { escrow-id: escrow-id, milestone-id: milestone-id }) ERR_MILESTONE_NOT_FOUND))
+      (milestone-amount (get amount milestone-data))
+      (platform-fee (calculate-fee milestone-amount))
+      (seller-amount (- milestone-amount platform-fee))
+    )
+    (asserts! (is-eq tx-sender (get buyer escrow-data)) ERR_NOT_AUTHORIZED)
+    (asserts! (is-eq (get state escrow-data) "milestone-pending") ERR_INVALID_STATE)
+    (asserts! (is-eq (get state milestone-data) "confirmed") ERR_MILESTONE_NOT_CONFIRMED)
+    (asserts! (not (is-escrow-expired escrow-id)) ERR_EXPIRED)
+
+    (try! (as-contract (stx-transfer?
+      seller-amount
+      tx-sender
+      (get seller escrow-data)
+    )))
+
+    (try! (as-contract (stx-transfer?
+      platform-fee
+      tx-sender
+      CONTRACT_OWNER
+    )))
+
+    (var-set collected-fees (+ (var-get collected-fees) platform-fee))
+
+    (map-set milestones
+      { escrow-id: escrow-id, milestone-id: milestone-id }
+      (merge milestone-data { state: "released" })
+    )
+
+    (ok true)
+  )
+)
+
+(define-read-only (get-milestone (escrow-id uint) (milestone-id uint))
+  (map-get? milestones { escrow-id: escrow-id, milestone-id: milestone-id })
+)
+
+(define-read-only (get-milestone-count-for-escrow (escrow-id uint))
+  (get-milestone-count escrow-id)
 )
