@@ -560,3 +560,21 @@
 (define-read-only (get-milestone-count-for-escrow (escrow-id uint))
   (get-milestone-count escrow-id)
 )
+
+(define-public (top-up-escrow (escrow-id uint) (additional-amount uint))
+  (let
+    (
+      (escrow-data (unwrap! (get-escrow-details escrow-id) ERR_ESCROW_NOT_FOUND))
+      (funds (unwrap! (get-escrow-funds escrow-id) ERR_ESCROW_NOT_FOUND))
+      (new-amount (+ (get amount funds) additional-amount))
+    )
+    (asserts! (is-eq tx-sender (get buyer escrow-data)) ERR_NOT_AUTHORIZED)
+    (asserts! (> additional-amount u0) ERR_INSUFFICIENT_FUNDS)
+    (asserts! (or (is-eq (get state escrow-data) "pending") (is-eq (get state escrow-data) "milestone-pending")) ERR_INVALID_STATE)
+    (asserts! (not (is-escrow-expired escrow-id)) ERR_EXPIRED)
+    (try! (stx-transfer? additional-amount tx-sender (as-contract tx-sender)))
+    (map-set escrow-funds { escrow-id: escrow-id } { amount: new-amount })
+    (map-set escrows { escrow-id: escrow-id } (merge escrow-data { amount: new-amount }))
+    (ok new-amount)
+  )
+)
