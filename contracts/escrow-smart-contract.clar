@@ -578,3 +578,49 @@
     (ok new-amount)
   )
 )
+
+(define-public (release-partial-funds (escrow-id uint) (amount uint))
+  (let 
+    (
+      (escrow-data (unwrap! (get-escrow-details escrow-id) ERR_ESCROW_NOT_FOUND))
+      (escrow-fund-data (unwrap! (get-escrow-funds escrow-id) ERR_ESCROW_NOT_FOUND))
+      (current-balance (get amount escrow-fund-data))
+      (platform-fee (calculate-fee amount))
+      (seller-amount (- amount platform-fee))
+    )
+    (asserts! (is-eq tx-sender (get buyer escrow-data)) ERR_NOT_AUTHORIZED)
+    (asserts! (or 
+      (is-eq (get state escrow-data) "delivered")
+      (is-eq (get state escrow-data) "pending")
+    ) ERR_INVALID_STATE)
+    (asserts! (not (is-escrow-expired escrow-id)) ERR_EXPIRED)
+    (asserts! (> amount u0) ERR_INSUFFICIENT_FUNDS)
+    (asserts! (< amount current-balance) ERR_INSUFFICIENT_FUNDS)
+    
+    (try! (as-contract (stx-transfer? 
+      seller-amount
+      tx-sender 
+      (get seller escrow-data)
+    )))
+    
+    (try! (as-contract (stx-transfer? 
+      platform-fee
+      tx-sender 
+      CONTRACT_OWNER
+    )))
+    
+    (var-set collected-fees (+ (var-get collected-fees) platform-fee))
+    
+    (map-set escrow-funds
+      { escrow-id: escrow-id }
+      { amount: (- current-balance amount) }
+    )
+    
+    (map-set escrows
+      { escrow-id: escrow-id }
+      (merge escrow-data { amount: (- current-balance amount) })
+    )
+    
+    (ok true)
+  )
+)
