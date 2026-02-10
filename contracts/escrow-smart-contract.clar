@@ -172,6 +172,7 @@
   )
 )
 
+
 (define-public (release-funds (escrow-id uint))
   (let 
     (
@@ -622,5 +623,25 @@
     )
     
     (ok true)
+  )
+)
+
+(define-public (extend-escrow (escrow-id uint) (extension uint))
+  (let
+    (
+      (escrow-data (unwrap! (get-escrow-details escrow-id) ERR_ESCROW_NOT_FOUND))
+      (current-expiry (get expires-at escrow-data))
+      (new-expiry (+ current-expiry extension))
+    )
+    (unwrap! (get-escrow-funds escrow-id) ERR_INVALID_STATE)
+    (asserts! (is-eq tx-sender (get buyer escrow-data)) ERR_NOT_AUTHORIZED)
+    (asserts! (> extension u0) ERR_INVALID_STATE)
+    (asserts! (not (is-escrow-expired escrow-id)) ERR_EXPIRED)
+
+    (map-set escrows
+      { escrow-id: escrow-id }
+      (merge escrow-data { expires-at: new-expiry })
+    )
+    (ok new-expiry)
   )
 )
